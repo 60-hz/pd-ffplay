@@ -1,0 +1,12 @@
+#N canvas 719 355 450 300 14;
+#X obj 52 106 inlet;
+#X obj 52 163 line~;
+#X obj 52 192 outlet~;
+#X obj 121 106 inlet;
+#X obj 249 55 cnv 15 40 22 empty empty zp~ 2 10 0 16 -1 -262144 0;
+#X obj 52 135 pack 0 \$1;
+#X text 127 80 ramp between value changes (signal);
+#X connect 0 0 5 0;
+#X connect 1 0 2 0;
+#X connect 3 0 5 1;
+#X connect 5 0 1 0;
