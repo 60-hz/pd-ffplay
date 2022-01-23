@@ -38,11 +38,15 @@ https://github.com/60-hz/pd-ffplay/blob/main/bin/macOS/MacOS_dependencies.zip
 
 OR open a terminal and do:
 
+```
 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"  
 
 brew install ffmpeg
+```
 
 Linux dependencies:
 ====
 
+```
 apt-get install ffmpeg
+```
