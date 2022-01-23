@@ -1,4 +1,4 @@
-pd-ffmplay~
+pd-ffplay~
 =========
 binaries of the ffmplay~ external for PureData by myQwil
 https://github.com/myQwil/pdxtra
