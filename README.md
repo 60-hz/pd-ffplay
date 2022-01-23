@@ -32,6 +32,12 @@ swresample-3.dll
 
 Pd macOS64 dependencies:
 ====
+
+Copy those .dylib files in /usr/local/opt/ffmpeg/lib
+https://github.com/60-hz/pd-ffplay/blob/main/bin/macOS/MacOS_dependencies.zip
+
+OR open a terminal and do:
+
 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"  
 
 brew install ffmpeg
