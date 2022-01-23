@@ -32,7 +32,7 @@ swresample-3.dll
 
 Pd macOS64 dependencies:
 ====
-
+/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
 brew install ffmpeg
 
 Linux dependencies:
