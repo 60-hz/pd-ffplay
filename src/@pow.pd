@@ -2,7 +2,7 @@
 #X obj 180 50 inlet;
 #X obj 240 90 inlet;
 #X obj 180 150 f \$1;
-#X obj 190 180 - \$2;
+#X obj 190 180 pow \$2;
 #X obj 180 90 t b f;
 #X obj 190 210 outlet;
 #X connect 0 0 4 0;
