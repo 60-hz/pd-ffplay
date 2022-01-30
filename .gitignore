@@ -1,2 +1,5 @@
 .DS_Store
 *.o
+src/*.pd_linux
+src/*.pd_darwin
+src/*.m_amd64
