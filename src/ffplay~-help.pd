@@ -145,8 +145,7 @@
 #X obj 150 80 moses 1;
 #X obj 210 140 moses 2;
 #X floatatom 310 80 0 0 0 0 - - - 0;
-#X msg 30 180 \$1 \, info %album% %disc%|%track% - %title% \, time
-;
+#X msg 30 180 \$1 \, info %disc%|%track% - %title% \, time;
 #X connect 0 0 4 0;
 #X connect 1 0 5 1;
 #X connect 3 0 1 0;
@@ -164,12 +163,12 @@
 #X obj 190 160 s \$0start;
 #X obj 100 120 s \$0time;
 #X obj 320 120 s \$0play;
-#X obj 180 220 s \$0open;
+#X obj 150 220 s \$0open;
 #X obj 250 90 s \$0pos;
 #X obj 210 120 s \$0done;
 #X obj 50 180 print -n;
 #X obj 50 60 route tracks time open done pos play;
-#X msg 180 190 path \, tracks \, info;
+#X msg 150 190 path \, tracks \, info %artist% - %album%;
 #X msg 50 150 \$1 track(s);
 #X connect 0 0 11 0;
 #X connect 2 1 12 0;
@@ -324,7 +323,7 @@
 #X text 60 50 An implementation of the FFmpeg libraries for the audio
 playback of various media formats. Includes m3u playlist functionality
 and playback speed manipulation.;
-#N canvas 1220 280 450 300 play 0;
+#N canvas 1220 280 450 300 next 0;
 #X obj 80 110 r \$0start;
 #X obj 80 210 outlet;
 #X obj 200 50 r \$0n;
@@ -343,7 +342,7 @@ and playback speed manipulation.;
 #X connect 7 0 4 1;
 #X connect 7 0 8 0;
 #X connect 8 0 5 1;
-#X restore 50 260 pd play;
+#X restore 50 260 pd next;
 #X connect 0 0 1 0;
 #X connect 3 0 30 0;
 #X connect 4 0 30 1;

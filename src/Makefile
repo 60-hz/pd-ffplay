@@ -9,7 +9,7 @@ datafiles = ffplay~-help.pd
 suppress-wunused = yes
 warn.flags = -Wall -Winline -Wstrict-aliasing -Wshadow
 
-ldlibs = -lavutil -lavcodec -lavformat -lswresample
+ldlibs = -lavutil -lavcodec -lavformat -lswresample -lsamplerate
 
-include ../pd-lib-builder/Makefile.pdlibbuilder
+include pd-lib-builder/Makefile.pdlibbuilder
 
