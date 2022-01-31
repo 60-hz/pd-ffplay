@@ -1,13 +1,17 @@
-#include "ufloat.h"
+#include "m_pd.h"
 #include <stdio.h>
 #include <float.h>
 #include <string.h>
+#include <samplerate.h>
 #include <libavcodec/avcodec.h>
 #include <libavformat/avformat.h>
 #include <libswresample/swresample.h>
 
-#define BUFSIZE 0x400
-#define MAXCH 32
+#define FRAMES 0x10
+#define MAXCH 0x20
+
+static const double frames = FRAMES;
+static const double inv_frames = 1. / FRAMES;
 
 typedef const char *err_t;
 
@@ -28,18 +32,19 @@ typedef struct {
 	AVPacket        *pkt;
 	AVFrame         *frm;
 	SwrContext      *swr;
-	t_sample        *buf[MAXCH];
-	t_sample        *outs[MAXCH];
-	t_playlist      plist;
-	t_float  speed;   /* playback speed factor */
+	SRC_STATE   *state;
+	SRC_DATA     data;
+	float       *in;  /* audio input buffer */
+	float       *out; /* audio output buffer */
+	t_sample *outs[MAXCH];
+	t_playlist plist;
 	int64_t  layout;  /* channel layout bit-mask */
+	t_float  speed;   /* playback speed */
+	double   ratio;   /* samplerate ratio */
 	int      idx;     /* index of the audio stream */
 	unsigned nch;     /* number of channels */
-	unsigned siz;     /* number of output samples */
-	unsigned pos;     /* current buffer position */
 	unsigned open:1;  /* true when a file has been successfully opened */
 	unsigned play:1;  /* play/pause toggle */
-	unsigned sped:1;  /* speed change request flag */
 	t_outlet *o_meta; /* outputs track metadata */
 } t_ffplay;
 
@@ -58,22 +63,11 @@ static void ffplay_position(t_ffplay *x) {
 	outlet_anything(x->o_meta ,gensym("pos") ,1 ,&pos);
 }
 
-static int speed_to_srate(t_float speed) {
-	if (speed < 0.01)
-		speed = 0.01;
-	speed = sys_getsr() / speed;
-	ufloat uf = {speed};
-	int d = speed;
-	if (speed <= 0.f)
-		d = 1;
-	else if (uf.ex == 0xff)
-		d = INT_MAX;
-	return d;
-}
-
 static void ffplay_speed(t_ffplay *x ,t_float f) {
 	x->speed = f;
-	x->sped = 1;
+	f *= x->ratio;
+	f = f > frames ? frames : (f < inv_frames ? inv_frames : f);
+	x->data.src_ratio = 1. / f;
 }
 
 static void ffplay_seek(t_ffplay *x ,t_float f) {
@@ -81,7 +75,9 @@ static void ffplay_seek(t_ffplay *x ,t_float f) {
 	int64_t ts = 1000L * f;
 	avformat_seek_file(x->ic ,-1 ,0 ,ts ,x->ic->duration ,0);
 	swr_init(x->swr);
-	x->siz = x->pos = 0;
+	src_reset(x->state);
+	x->data.output_frames_gen = 0;
+	x->data.input_frames = 0;
 
 	// avcodec_flush_buffers(x->ctx); // doesn't always flush properly
 	avcodec_free_context(&x->ctx);
@@ -101,49 +97,48 @@ static t_int *ffplay_perform(t_int *w) {
 	int n = (int)w[2];
 
 	if (x->open && x->play)
-	{	t_sample **buf = x->buf;
-		unsigned pos = x->pos;
+	{	SRC_DATA *data = &x->data;
 		while (n--)
-		{	outer_while:
-			if (x->siz)
-			{	sound:
+		{	if (data->output_frames_gen > 0)
+			{	perform:
 				for (int i = nch; i--;)
-					*outs[i]++ = buf[i][pos];
-				if (++pos >= x->siz)
-				{	x->siz = swr_convert(x->swr ,(uint8_t**)buf ,BUFSIZE ,0 ,0);
-					pos = 0;
-					continue;  }
-				if (n--)
-					goto sound;
-				else break;  }
-			while (av_read_frame(x->ic ,x->pkt) >= 0)
-			{	if (x->pkt->stream_index == x->idx)
-				{	if (avcodec_send_packet(x->ctx ,x->pkt) < 0
-					 || avcodec_receive_frame(x->ctx ,x->frm) < 0)
-						continue;
-					if (x->sped)
-					{	int64_t layout_in =
-							av_get_default_channel_layout(x->ctx->channels);
-						swr_alloc_set_opts(x->swr
-							,x->layout ,AV_SAMPLE_FMT_FLTP ,speed_to_srate(x->speed)
-							,layout_in ,x->ctx->sample_fmt ,x->ctx->sample_rate
-							,0 ,NULL);
-						swr_init(x->swr);
-						x->sped = 0;  }
-					x->siz = swr_convert(x->swr ,(uint8_t**)buf ,BUFSIZE
-						,(const uint8_t**)x->frm->extended_data ,x->frm->nb_samples);
-					av_packet_unref(x->pkt);
-					goto outer_while;  }
-				av_packet_unref(x->pkt);  }
+					*outs[i]++ = data->data_out[i];
+				data->data_out += nch;
+				data->output_frames_gen--;
+				continue;  }
+			else if (data->input_frames > 0)
+			{	resample:
+				data->data_out = x->out;
+				src_process(x->state ,data);
+				data->input_frames -= data->input_frames_used;
+				if (data->input_frames <= 0)
+				{	data->data_in = x->in;
+					data->input_frames =
+						swr_convert(x->swr ,(uint8_t**)&x->in ,FRAMES ,0 ,0);  }
+				else data->data_in += data->input_frames_used * nch;
+				goto perform;  }
+			else
+			{	// receive
+				data->data_in = x->in;
+				while (av_read_frame(x->ic ,x->pkt) >= 0)
+				{	if (x->pkt->stream_index == x->idx)
+					{	if (avcodec_send_packet(x->ctx ,x->pkt) < 0
+						 || avcodec_receive_frame(x->ctx ,x->frm) < 0)
+							continue;
+						data->input_frames = swr_convert(x->swr ,(uint8_t**)&x->in ,FRAMES
+							,(const uint8_t**)x->frm->extended_data ,x->frm->nb_samples);
+						av_packet_unref(x->pkt);
+						goto resample;  }
+					av_packet_unref(x->pkt);  }  }
 
 			// reached the end
 			if (x->play)
-				x->play = 0 ,n++; // don't iterate in case there's another track
+			{	x->play = 0;
+				n++; // don't iterate in case there's another track
+				outlet_anything(x->o_meta ,gensym("done") ,0 ,0);  }
 			else
 			{	ffplay_seek(x ,0);
-				goto silence;  }
-			outlet_anything(x->o_meta ,gensym("EOF") ,0 ,0);  }
-		x->pos = pos;  }
+				goto silence;  }  }  }
 	else while (n--)
 	{	silence:
 		for (int i = nch; i--;)
@@ -157,7 +152,7 @@ static void ffplay_dsp(t_ffplay *x ,t_signal **sp) {
 	dsp_add(ffplay_perform ,2 ,x ,sp[0]->s_n);
 }
 
-static err_t ffplay_load(t_ffplay *x ,const char *fname) {
+static inline err_t ffplay_load_(t_ffplay *x ,const char *fname) {
 	avformat_close_input(&x->ic);
 	x->ic = avformat_alloc_context();
 	if (avformat_open_input(&x->ic ,fname ,NULL ,NULL) != 0)
@@ -167,7 +162,7 @@ static err_t ffplay_load(t_ffplay *x ,const char *fname) {
 	x->ic->seek2any = 1;
 
 	int i = -1;
-	for (unsigned j=0; j < x->ic->nb_streams; j++)
+	for (unsigned j = x->ic->nb_streams; j--;)
 		if (x->ic->streams[j]->codecpar->codec_type == AVMEDIA_TYPE_AUDIO)
 		{	i = j;
 			break;  }
@@ -192,13 +187,16 @@ static err_t ffplay_load(t_ffplay *x ,const char *fname) {
 	swr_free(&x->swr);
 	int64_t layout_in = av_get_default_channel_layout(x->ctx->channels);
 	x->swr = swr_alloc_set_opts(x->swr
-		,x->layout ,AV_SAMPLE_FMT_FLTP ,speed_to_srate(x->speed)
+		,x->layout ,AV_SAMPLE_FMT_FLT  ,x->ctx->sample_rate
 		,layout_in ,x->ctx->sample_fmt ,x->ctx->sample_rate
 		,0 ,NULL);
 	if (swr_init(x->swr) < 0)
 		return "Resampler initialization failed";
 
-	x->siz = x->pos = 0;
+	x->ratio = (double)x->ctx->sample_rate / sys_getsr();
+	ffplay_speed(x ,x->speed);
+	x->data.output_frames_gen = 0;
+	x->data.input_frames = 0;
 	return 0;
 }
 
@@ -227,12 +225,12 @@ static err_t ffplay_m3u(t_ffplay *x ,t_symbol *s) {
 	return 0;
 }
 
-static err_t ffplay_start(t_ffplay *x ,int track) {
+static err_t ffplay_load(t_ffplay *x ,int track) {
 	char str[MAXPDSTRING];
 	sprintf(str ,"%s/%s"
 		,x->plist.dir->s_name
 		,x->plist.trk[track-1]->s_name);
-	err_t err_msg = ffplay_load(x ,str);
+	err_t err_msg = ffplay_load_(x ,str);
 	x->open = !err_msg;
 	x->play = 0;
 	return err_msg;
@@ -262,8 +260,8 @@ static void ffplay_open(t_ffplay *x ,t_symbol *s) {
 	{	x->plist.siz = 1;
 		x->plist.trk[0] = gensym(path);  }
 
-	if (!err_msg) err_msg = ffplay_start(x ,1);
-	if (err_msg) post("Error: %s." ,err_msg);
+	if (err_msg || (err_msg = ffplay_load(x ,1)))
+		post("Error: %s." ,err_msg);
 	t_atom open = {.a_type=A_FLOAT ,.a_w={.w_float = x->open}};
 	outlet_anything(x->o_meta ,gensym("open") ,1 ,&open);
 }
@@ -279,6 +277,14 @@ static t_atom ffplay_meta(t_ffplay *x ,t_symbol *s) {
 		return (t_atom){.a_type=A_FLOAT  ,.a_w={.w_float = x->plist.siz}};
 
 	AVDictionaryEntry *entry = av_dict_get(x->ic->metadata ,s->s_name ,0 ,0);
+
+	if (!entry && !strcmp(s->s_name ,"date") // try a few other 'date' aliases
+		&& !(entry = av_dict_get(x->ic->metadata ,"time" ,0 ,0))
+		&& !(entry = av_dict_get(x->ic->metadata ,"tyer" ,0 ,0))
+		&& !(entry = av_dict_get(x->ic->metadata ,"tdat" ,0 ,0))
+		&& !(entry = av_dict_get(x->ic->metadata ,"tdrc" ,0 ,0))
+	);
+
 	if (entry)
 		return (t_atom){.a_type=A_SYMBOL ,.a_w={.w_symbol = gensym(entry->value)}};
 	else return (t_atom){.a_type=A_NULL ,.a_w={.w_float = 0}};
@@ -303,11 +309,13 @@ static void ffplay_info_custom(t_ffplay *x ,int ac ,t_atom *av) {
 			buf[len] = 0;
 			t_atom atom = ffplay_meta(x ,gensym(buf));
 			switch (atom.a_type)
-			{	case A_FLOAT:  startpost("%g" ,atom.a_w.w_float); break;
-				case A_SYMBOL: startpost("%s" ,atom.a_w.w_symbol->s_name); break;
-				default: startpost("");  }
+			{	case A_FLOAT  : startpost("%g" ,atom.a_w.w_float);          break;
+				case A_SYMBOL : startpost("%s" ,atom.a_w.w_symbol->s_name); break;
+				default       : startpost("");  }
 			sym += len + 2;  }
-		startpost("%s%s" ,sym ,ac ? " ":"");  }
+		startpost("%s%s" ,sym ,ac ? " " : "");  }
+	else if (av->a_type == A_FLOAT)
+		startpost("%g%s" ,av->a_w.w_float ,ac ? " " : "");
 	endpost();
 }
 
@@ -339,9 +347,9 @@ static void ffplay_anything(t_ffplay *x ,t_symbol *s ,int ac ,t_atom *av) {
 	if (!x->open) return;
 	t_atom atom = ffplay_meta(x ,s);
 	switch (atom.a_type)
-	{	case A_FLOAT:  post("%s: %g" ,s->s_name ,atom.a_w.w_float); break;
-		case A_SYMBOL: post("%s: %s" ,s->s_name ,atom.a_w.w_symbol->s_name); break;
-		default: pd_error(x ,"ffplay~: no method for '%s'" ,s->s_name);  }
+	{	case A_FLOAT  : post("%s: %g" ,s->s_name ,atom.a_w.w_float); break;
+		case A_SYMBOL : post("%s: %s" ,s->s_name ,atom.a_w.w_symbol->s_name); break;
+		default       : post("no metadata for '%s'" ,s->s_name);  }
 }
 
 static void ffplay_tracks(t_ffplay *x) {
@@ -360,7 +368,7 @@ static void ffplay_float(t_ffplay *x ,t_float f) {
 	if (!x->open) return;
 	int d = f;
 	if (d > 0 && d <= x->plist.siz)
-	{	err_t err_msg = ffplay_start(x ,d);
+	{	err_t err_msg = ffplay_load(x ,d);
 		if (err_msg) post("Error: %s." ,err_msg);
 		x->play = !err_msg;  }
 	else
@@ -388,21 +396,28 @@ static void *ffplay_new(t_symbol *s ,int ac ,t_atom *av) {
 	else if (ac > MAXCH)
 		ac = MAXCH;
 	x->nch = ac;
+	x->in  = (t_sample*)getbytes(x->nch * FRAMES * sizeof(t_sample));
+	x->out = (t_sample*)getbytes(x->nch * FRAMES * sizeof(t_sample));
 
+	// channel layout masking details: libavutil/channel_layout.h
 	x->layout = 0;
 	for (int i=ac; i--;)
 	{	outlet_new(&x->obj ,&s_signal);
 		int ch = atom_getfloatarg(i ,ac ,av);
-		if (ch > 0) x->layout |= 1 << (ch-1);
-		x->buf[i] = (t_sample*)getbytes(BUFSIZE * sizeof(t_sample));  }
-
+		if (ch > 0) x->layout |= 1 << (ch-1);  }
 	x->o_meta = outlet_new(&x->obj ,0);
-	x->open = x->play = x->sped = 0;
-	x->speed = 1;
+
+	int err;
+	if ((x->state = src_new(SRC_LINEAR ,x->nch ,&err)) == NULL)
+		printf ("\n\nError : src_new() failed : %s.\n\n" ,src_strerror(err)) ;
+	x->data.output_frames = FRAMES;
 
 	x->plist.siz = 0;
 	x->plist.max = 1;
 	x->plist.trk = (t_symbol**)getbytes(sizeof(t_symbol*));
+
+	x->speed = 1.;
+	x->open = x->play = 0;
 	return (x);
 }
 
@@ -412,9 +427,12 @@ static void ffplay_free(t_ffplay *x) {
 	av_packet_free(&x->pkt);
 	av_frame_free(&x->frm);
 	swr_free(&x->swr);
+	src_delete(x->state);
 
-	for (int i = x->nch; i--;)
-		freebytes(x->buf[i] ,BUFSIZE * sizeof(t_sample));
+	t_playlist *pl = &x->plist;
+	freebytes(pl->trk ,pl->max * sizeof(t_symbol*));
+	freebytes(x->in  ,x->nch * FRAMES * sizeof(t_sample));
+	freebytes(x->out ,x->nch * FRAMES * sizeof(t_sample));
 }
 
 void ffplay_tilde_setup(void) {

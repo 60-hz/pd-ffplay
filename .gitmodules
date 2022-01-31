@@ -1,0 +1,3 @@
+[submodule "pd-lib-builder"]
+	path = src/pd-lib-builder
+	url = https://github.com/myQwil/pd-lib-builder.git
